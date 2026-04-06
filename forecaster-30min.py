@@ -35,7 +35,7 @@ df[cols_num] = df[cols_num].interpolate(method="linear").bfill()
 
 # 3. Feature Engineering - Hour, Month and Time Lags
 df["hour"] = df["horodatage_référence"].dt.hour
-df["month"] = df["horodatage_référence"].dt.month
+df["year_day_pct"] = df["horodatage_référence"].dt.dayofyear / 365
 
 target = TARGET_COLUMN
 
@@ -64,7 +64,7 @@ features_to_check = [
     "wind_trend_1h",
     "direction_du_vent_moyenne_10min",
     "hour",
-    "month",
+    "year_day_pct",
     "pressure_trend_6h",
     "humidité",
     "température_air",
@@ -84,7 +84,7 @@ features = [
     "wind_trend_1h",
     "direction_du_vent_moyenne_10min",
     "hour",
-    "month",
+    "year_day_pct",
     "pressure_trend_6h",
     "humidité",
     "température_air",
