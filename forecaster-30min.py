@@ -44,6 +44,8 @@ PRESSURE_TREND_6H_COLUMN = "pressure_trend_6h"
 
 # --- Temporal Features ---
 HOUR_COLUMN = "hour"
+HOUR_SIN_COLUMN = "hour_sin"
+HOUR_COS_COLUMN = "hour_cos"
 YEAR_DAY_PCT_COLUMN = "year_day_pct"
 
 # --- Train/Test Split ---
@@ -106,6 +108,8 @@ df[cols_num] = df[cols_num].interpolate(method="linear").bfill()
 
 # 3. Feature Engineering - Hour, Month and Time Lags
 df[HOUR_COLUMN] = df["horodatage_référence"].dt.hour
+df[HOUR_SIN_COLUMN] = np.sin(2 * np.pi * df[HOUR_COLUMN] / 24)
+df[HOUR_COS_COLUMN] = np.cos(2 * np.pi * df[HOUR_COLUMN] / 24)
 df[YEAR_DAY_PCT_COLUMN] = df["horodatage_référence"].dt.dayofyear / 365
 
 target = TARGET_COLUMN
@@ -132,7 +136,8 @@ features_to_check = (
     + trend_cols
     + [
         WIND_DIRECTION_COLUMN,
-        HOUR_COLUMN,
+        HOUR_SIN_COLUMN,
+        HOUR_COS_COLUMN,
         YEAR_DAY_PCT_COLUMN,
         PRESSURE_TREND_6H_COLUMN,
         HUMIDITY_COLUMN,
@@ -149,7 +154,8 @@ features = (
     + trend_cols
     + [
         WIND_DIRECTION_COLUMN,
-        HOUR_COLUMN,
+        HOUR_SIN_COLUMN,
+        HOUR_COS_COLUMN,
         YEAR_DAY_PCT_COLUMN,
         PRESSURE_TREND_6H_COLUMN,
         HUMIDITY_COLUMN,
