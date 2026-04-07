@@ -11,8 +11,11 @@ from sklearn.metrics import (
     mean_squared_error,
 )
 
+import sys
 import time, os
 import xgboost as xgb
+
+show_graphs = sys.argv[1] if len(sys.argv) > 1 else ""
 
 
 # Constants
@@ -197,78 +200,88 @@ test_r2_history = 1 - (test_mse / var_y)
 
 
 # Visualizations
-plt.figure(figsize=(18, 15))
+if "1" in show_graphs:
+    plt.figure(figsize=(18, 15))
 
-# Plot 1: Train & Test Loss (RMSE)
-plt.subplot(2, 2, 1)
-metric_name = "rmse"
-epochs = len(evals_result["train"][metric_name])
-plt.plot(
-    range(epochs), evals_result["train"][metric_name], label="Train Loss", color="blue"
-)
-plt.plot(
-    range(epochs),
-    evals_result["test"][metric_name],
-    label="Test Loss",
-    color="red",
-    linestyle="--",
-)
-plt.title("Loss Evolution (RMSE)")
-plt.legend()
-plt.grid(alpha=0.3)
+    # Plot 1: Train & Test Loss (RMSE)
+    plt.subplot(2, 2, 1)
+    metric_name = "rmse"
+    epochs = len(evals_result["train"][metric_name])
+    plt.plot(
+        range(epochs),
+        evals_result["train"][metric_name],
+        label="Train Loss",
+        color="blue",
+    )
+    plt.plot(
+        range(epochs),
+        evals_result["test"][metric_name],
+        label="Test Loss",
+        color="red",
+        linestyle="--",
+    )
+    plt.title("Loss Evolution (RMSE)")
+    plt.legend()
+    plt.grid(alpha=0.3)
 
-# Plot 2: Train & Test R2
-plt.subplot(2, 2, 2)
-plt.plot(range(epochs), train_r2_history, label="Train R2", color="green")
-plt.plot(
-    range(epochs), test_r2_history, label="Test R2", color="darkorange", linestyle="--"
-)
+    # Plot 2: Train & Test R2
+    plt.subplot(2, 2, 2)
+    plt.plot(range(epochs), train_r2_history, label="Train R2", color="green")
+    plt.plot(
+        range(epochs),
+        test_r2_history,
+        label="Test R2",
+        color="darkorange",
+        linestyle="--",
+    )
 
-# Zoom on the converged region - use last 50% of iterations
-last_half_idx = epochs // 2
-train_vals = train_r2_history[last_half_idx:]
-test_vals = test_r2_history[last_half_idx:]
+    # Zoom on the converged region - use last 50% of iterations
+    last_half_idx = epochs // 2
+    train_vals = train_r2_history[last_half_idx:]
+    test_vals = test_r2_history[last_half_idx:]
 
-all_vals = np.concatenate([train_vals, test_vals])
-r2_min = np.min(all_vals)
-r2_max = np.max(all_vals)
+    all_vals = np.concatenate([train_vals, test_vals])
+    r2_min = np.min(all_vals)
+    r2_max = np.max(all_vals)
 
-# Add 20% padding below and 5% above
-y_min = r2_min - (r2_max - r2_min) * 20
-y_max = r2_max + (r2_max - r2_min) * 5
-plt.ylim(y_min, min(1.001, y_max))
+    # Add 20% padding below and 5% above
+    y_min = r2_min - (r2_max - r2_min) * 20
+    y_max = r2_max + (r2_max - r2_min) * 5
+    plt.ylim(y_min, min(1.001, y_max))
 
-plt.title("Convergence Focus (R2 Score)")
-plt.xlabel("Number of Trees")
-plt.ylabel("R2 (Zoomed)")
-plt.legend()
-plt.grid(alpha=0.3, which="both")
+    plt.title("Convergence Focus (R2 Score)")
+    plt.xlabel("Number of Trees")
+    plt.ylabel("R2 (Zoomed)")
+    plt.legend()
+    plt.grid(alpha=0.3, which="both")
 
-# Plot 3: Error Distribution
-plt.subplot(2, 2, 3)
-residuals = y_test - y_pred
-sns.histplot(residuals, bins=100, kde=True, color="purple")
-plt.axvline(x=0, color="black", linestyle="--")
-plt.title("Error Distribution (Residuals)")
+    # Plot 3: Error Distribution
+    plt.subplot(2, 2, 3)
+    residuals = y_test - y_pred
+    sns.histplot(residuals, bins=100, kde=True, color="purple")
+    plt.axvline(x=0, color="black", linestyle="--")
+    plt.title("Error Distribution (Residuals)")
 
-# Plot 4: Feature Importance
-plt.subplot(2, 2, 4)
-importance_dict = model.get_score(importance_type="weight")
-importances = [importance_dict.get(f, 0) for f in features]
-sns.barplot(x=importances, y=features, hue=features, palette="viridis", legend=False)  # type: ignore[arg-type]
-plt.title("Feature Importance")
+    # Plot 4: Feature Importance
+    plt.subplot(2, 2, 4)
+    importance_dict = model.get_score(importance_type="weight")
+    importances = [importance_dict.get(f, 0) for f in features]
+    sns.barplot(
+        x=importances, y=features, hue=features, palette="viridis", legend=False
+    )  # type: ignore[arg-type]
+    plt.title("Feature Importance")
 
-plt.tight_layout()
-plt.show()
+    plt.tight_layout()
+    plt.show()
 
-
-# Final Plot: Temporal Zoom
-plt.figure(figsize=(18, 6))
-plt.plot(y_test.values[:300], label="Actual", color="black", alpha=0.7)
-plt.plot(y_pred[:300], label="Predicted", color="orange", linestyle="--")
-plt.title("Zoom 50h: Actual vs Predicted")
-plt.legend()
-plt.show()
+if "2" in show_graphs:
+    # Final Plot: Temporal Zoom
+    plt.figure(figsize=(18, 6))
+    plt.plot(y_test.values[:300], label="Actual", color="black", alpha=0.7)
+    plt.plot(y_pred[:300], label="Predicted", color="orange", linestyle="--")
+    plt.title("Zoom 50h: Actual vs Predicted")
+    plt.legend()
+    plt.show()
 
 
 print("--- Naivity Score ---")
