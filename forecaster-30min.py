@@ -6,6 +6,7 @@ import seaborn as sns
 from sklearn.metrics import (
     mean_absolute_error,
     median_absolute_error,
+    max_error,
     r2_score,
     mean_squared_error,
 )
@@ -170,6 +171,10 @@ medianae = median_absolute_error(y_test, y_pred)
 rmse = np.sqrt(mean_squared_error(y_test, y_pred))
 r2 = r2_score(y_test, y_pred)
 r2_train = r2_score(y_train, y_pred_train)
+max_er = max_error(y_test, y_pred)
+abs_errors = np.abs(y_test - y_pred)
+pct_above_2kmh = np.mean(abs_errors > 2) * 100
+pct_above_5kmh = np.mean(abs_errors > 5) * 100
 
 
 print(f"--- RESULTS ---")
@@ -178,6 +183,9 @@ print(f"R2 Score (TRAIN): {r2_train:.4f} (check for overfitting)")
 print(f"Mean Absolute Error (MAE): {mae:.2f} km/h")
 print(f"Median Absolute Error (MedianAE): {medianae:.2f} km/h")
 print(f"RMSE: {rmse:.2f} km/h")
+print(f"Max Error: {max_er:.2f} km/h")
+print(f"Errors > 2 km/h: {pct_above_2kmh:.1f}%")
+print(f"Errors > 5 km/h: {pct_above_5kmh:.1f}%")
 
 
 # Calculate R2 per iteration
