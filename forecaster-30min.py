@@ -11,7 +11,7 @@ from sklearn.metrics import (
     mean_squared_error,
 )
 
-import time
+import time, os
 import xgboost as xgb
 
 
@@ -269,3 +269,16 @@ plt.plot(y_pred[:300], label="Predicted", color="orange", linestyle="--")
 plt.title("Zoom 50h: Actual vs Predicted")
 plt.legend()
 plt.show()
+
+
+print("--- Naivity Score ---")
+y_pred_naiv = test_df.loc[y_test.index, "wind_10min_ago"].values
+
+print(f"Naive Model R2 Score: {r2_score(y_test, y_pred_naiv):.4f}")
+print(
+    f"Naive Model Mean Absolute Error (MAE): {mean_absolute_error(y_test, y_pred_naiv):.2f} km/h"
+)
+
+
+os.makedirs("models", exist_ok=True)
+model.save_model(f"models/{str(os.path.basename(__file__))[:-3]}.ubj")
