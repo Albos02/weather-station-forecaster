@@ -48,7 +48,12 @@ df["wind_40min_ago"] = df[target].shift(4)
 df["wind_50min_ago"] = df[target].shift(5)
 df["wind_60min_ago"] = df[target].shift(6)
 
-df["wind_trend_1h"] = df[target] - df["wind_60min_ago"]
+df["wind_trend_10min"] = df[target] - df["wind_10min_ago"]
+df["wind_trend_20min"] = df[target] - df["wind_20min_ago"]
+df["wind_trend_30min"] = df[target] - df["wind_30min_ago"]
+df["wind_trend_40min"] = df[target] - df["wind_40min_ago"]
+df["wind_trend_50min"] = df[target] - df["wind_50min_ago"]
+df["wind_trend_60min"] = df[target] - df["wind_60min_ago"]
 
 df["pressure_6h_ago"] = df["pression_barométrique_qfe"].shift(PRESSURE_SHIFT)
 df["pressure_trend_6h"] = df["pression_barométrique_qfe"] - df["pressure_6h_ago"]
@@ -61,7 +66,12 @@ features_to_check = [
     "wind_40min_ago",
     "wind_50min_ago",
     "wind_60min_ago",
-    "wind_trend_1h",
+    "wind_trend_10min",
+    "wind_trend_20min",
+    "wind_trend_30min",
+    "wind_trend_40min",
+    "wind_trend_50min",
+    "wind_trend_60min",
     "direction_du_vent_moyenne_10min",
     "hour",
     "year_day_pct",
@@ -81,7 +91,12 @@ features = [
     "wind_40min_ago",
     "wind_50min_ago",
     "wind_60min_ago",
-    "wind_trend_1h",
+    "wind_trend_10min",
+    "wind_trend_20min",
+    "wind_trend_30min",
+    "wind_trend_40min",
+    "wind_trend_50min",
+    "wind_trend_60min",
     "direction_du_vent_moyenne_10min",
     "hour",
     "year_day_pct",
