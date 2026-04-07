@@ -34,6 +34,11 @@ USE_PEAK_WEIGHTED_LOSS = True
 PEAK_THRESHOLD = 18.0
 PEAK_WEIGHT_FACTOR = 1.0
 
+### LOW WIND WEIGHTED LOSS
+USE_LOW_WIND_WEIGHTED_LOSS = True
+LOW_WIND_THRESHOLD = 5.0
+LOW_WIND_WEIGHT_FACTOR = 1.5
+
 # 1. Load and sort data
 df = pd.read_parquet("data/processed_windspeed.parquet", engine="pyarrow")
 df["horodatage_référence"] = pd.to_datetime(df["horodatage_référence"], dayfirst=True)
@@ -135,10 +140,10 @@ dtrain = xgb.DMatrix(X_train, label=y_train, enable_categorical=True)
 dtest = xgb.DMatrix(X_test, label=y_test, enable_categorical=True)
 
 
-
 ### PEAK WEIGHTED LOSS
 # Custom loss: peak-weighted asymmetric MSE
 # Penalizes errors on high wind speeds more heavily
+
 
 def peak_weighted_loss(preds, dtrain):
     y_true = dtrain.get_label()
@@ -166,6 +171,79 @@ def peak_weighted_eval(preds, dtrain):
     return "peak_rmse", np.sqrt(loss)
 
 
+### LOW WIND WEIGHTED LOSS
+# Custom loss: low-wind-weighted asymmetric MSE
+# Penalizes errors on low wind speeds more heavily
+
+
+def low_wind_weighted_loss(preds, dtrain):
+    y_true = dtrain.get_label()
+    errors = preds - y_true
+    # Weight increases as wind speed drops below threshold
+    weights = (
+        1.0
+        + LOW_WIND_WEIGHT_FACTOR
+        * np.maximum(0, LOW_WIND_THRESHOLD - y_true)
+        / LOW_WIND_THRESHOLD
+    )
+    # Gradient
+    grad = 2.0 * errors * weights
+    # Hessian
+    hess = 2.0 * weights
+    return grad, hess
+
+
+def low_wind_weighted_eval(preds, dtrain):
+    y_true = dtrain.get_label()
+    errors = preds - y_true
+    weights = (
+        1.0
+        + LOW_WIND_WEIGHT_FACTOR
+        * np.maximum(0, LOW_WIND_THRESHOLD - y_true)
+        / LOW_WIND_THRESHOLD
+    )
+    loss = np.mean(weights * errors**2)
+    return "low_wind_rmse", np.sqrt(loss)
+
+
+### COMBINED LOSS
+def combined_weighted_loss(preds, dtrain):
+    y_true = dtrain.get_label()
+    errors = preds - y_true
+    peak_weights = (
+        1.0
+        + PEAK_WEIGHT_FACTOR * np.maximum(0, y_true - PEAK_THRESHOLD) / PEAK_THRESHOLD
+    )
+    low_wind_weights = (
+        1.0
+        + LOW_WIND_WEIGHT_FACTOR
+        * np.maximum(0, LOW_WIND_THRESHOLD - y_true)
+        / LOW_WIND_THRESHOLD
+    )
+    weights = peak_weights * low_wind_weights
+    grad = 2.0 * errors * weights
+    hess = 2.0 * weights
+    return grad, hess
+
+
+def combined_weighted_eval(preds, dtrain):
+    y_true = dtrain.get_label()
+    errors = preds - y_true
+    peak_weights = (
+        1.0
+        + PEAK_WEIGHT_FACTOR * np.maximum(0, y_true - PEAK_THRESHOLD) / PEAK_THRESHOLD
+    )
+    low_wind_weights = (
+        1.0
+        + LOW_WIND_WEIGHT_FACTOR
+        * np.maximum(0, LOW_WIND_THRESHOLD - y_true)
+        / LOW_WIND_THRESHOLD
+    )
+    weights = peak_weights * low_wind_weights
+    loss = np.mean(weights * errors**2)
+    return "combined_rmse", np.sqrt(loss)
+
+
 # Model configuration for GPU
 params = {
     "max_depth": MODEL_MAX_DEPTH,
@@ -181,11 +259,22 @@ evals_result = {}
 print(f"Starting GPU training on {len(X_train)} rows...")
 start_time = time.time()
 
+
+def select_loss():
+    if USE_PEAK_WEIGHTED_LOSS and USE_LOW_WIND_WEIGHTED_LOSS:
+        return combined_weighted_loss
+    elif USE_PEAK_WEIGHTED_LOSS:
+        return peak_weighted_loss
+    elif USE_LOW_WIND_WEIGHTED_LOSS:
+        return low_wind_weighted_loss
+    return None
+
+
 model = xgb.train(
     params,
     dtrain,
     num_boost_round=NUM_BOOST_ROUNDS,
-    obj=peak_weighted_loss if USE_PEAK_WEIGHTED_LOSS else None,
+    obj=select_loss(),
     evals=[(dtrain, "train"), (dtest, "test")],
     evals_result=evals_result,
     verbose_eval=False,
