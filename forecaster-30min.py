@@ -15,32 +15,88 @@ import sys
 import time, os
 import xgboost as xgb
 
-show_graphs = sys.argv[1] if len(sys.argv) > 1 else ""
+# ============================================================
+# CONFIGURATION CONSTANTS - Tweak these to adjust behavior
+# ============================================================
 
-
-# Constants
+# --- Data ---
+DATA_FILE = "data/processed_windspeed.parquet"
 TARGET_COLUMN = "vitesse_vent_moyenne_10min_kmh"
-TARGET_DISTANCE = 3  # * 10 = prediction horizon in minutes
-SHIFT_VALUES = [1, 2, 3, 4, 5, 6]
-PRESSURE_SHIFT = 36
+PRESSURE_COLUMN = "pression_barométrique_qfe"
+WIND_DIRECTION_COLUMN = "direction_du_vent_moyenne_10min"
+HUMIDITY_COLUMN = "humidité"
+AIR_TEMP_COLUMN = "température_air"
+GUST_COLUMN = "rafale_3s_maximum_kmh"
+
+# --- Target ---
+TARGET_DISTANCE = 3  # * 10 = prediction horizon in minutes (3 = 30min ahead)
+TARGET_COLUMN_NAME = "target_30min"
+
+# --- Lag Features ---
+SHIFT_VALUES = [1, 2, 3, 4, 5, 6]  # Number of 10-min steps back for lag features
+LAG_PREFIX = "wind_{}min_ago"
+TREND_PREFIX = "wind_trend_{}min"
+
+# --- Pressure ---
+PRESSURE_SHIFT = 36  # Number of 10-min steps back for pressure (36 = 6h ago)
+PRESSURE_6H_AGO_COLUMN = "pressure_6h_ago"
+PRESSURE_TREND_6H_COLUMN = "pressure_trend_6h"
+
+# --- Temporal Features ---
+HOUR_COLUMN = "hour"
+YEAR_DAY_PCT_COLUMN = "year_day_pct"
+
+# --- Train/Test Split ---
 TRAIN_SPLIT_RATIO = 0.8
+TEST_SHIFT_STEPS = 10  # How many steps to shift test data
+TEST_PRED_SLICE = 3  # How many rows to slice off for alignment
+
+# --- Model Hyperparameters ---
 NUM_BOOST_ROUNDS = 60
 MODEL_MAX_DEPTH = 4
 MODEL_ETA = 0.1
 RANDOM_STATE = 42
+USE_GPU = True
 
-### PEAK WEIGHTED LOSS
-USE_PEAK_WEIGHTED_LOSS = True
-PEAK_THRESHOLD = 18.0
-PEAK_WEIGHT_FACTOR = 1.0
+# --- Evaluation Thresholds ---
+ERROR_THRESHOLDS = [1, 2, 5, 10]  # km/h thresholds for error percentage reporting
 
-### LOW WIND WEIGHTED LOSS
-USE_LOW_WIND_WEIGHTED_LOSS = True
-LOW_WIND_THRESHOLD = 5.0
-LOW_WIND_WEIGHT_FACTOR = 1.5
+# --- Loss Configuration ---
+LOSS_CONFIGS = [
+    {
+        "name": "peak",
+        "enabled": True,
+        "threshold": 18.0,
+        "weight_factor": 1.0,
+        "direction": "above",  # weight increases above threshold
+    },
+    {
+        "name": "low_wind",
+        "enabled": True,
+        "threshold": 5.0,
+        "weight_factor": 1.5,
+        "direction": "below",  # weight increases below threshold
+    },
+]
+LOSS_COMBINATION = "additive"  # "additive" or "multiplicative"
+LOSS_EVAL_METRIC_NAME = "combined_rmse"
+
+# --- Visualization ---
+PLOT_FIGSIZE_MAIN = (18, 15)
+PLOT_FIGSIZE_TEMPORAL = (18, 6)
+PLOT_TEMPORAL_ZOOM_ROWS = 300  # Number of rows to show in temporal zoom
+PLOT_ERROR_HIST_BINS = 100
+PLOT_R2_FOCUS_LAST_PCT = 0.5  # Show last 50% of iterations for R2 convergence
+PLOT_R2_Y_PADDING_LOW = 0.20  # 20% padding below
+PLOT_R2_Y_PADDING_HIGH = 0.05  # 5% padding above
+PLOT_R2_MAX_Y_CAP = 1.001  # Cap R2 y-axis at this value
+
+# ============================================================
+
+show_graphs = sys.argv[1] if len(sys.argv) > 1 else ""
 
 # 1. Load and sort data
-df = pd.read_parquet("data/processed_windspeed.parquet", engine="pyarrow")
+df = pd.read_parquet(DATA_FILE, engine="pyarrow")
 df["horodatage_référence"] = pd.to_datetime(df["horodatage_référence"], dayfirst=True)
 df = df.sort_values("horodatage_référence").reset_index(drop=True)
 
@@ -49,77 +105,58 @@ cols_num = df.select_dtypes(include=[np.number]).columns
 df[cols_num] = df[cols_num].interpolate(method="linear").bfill()
 
 # 3. Feature Engineering - Hour, Month and Time Lags
-df["hour"] = df["horodatage_référence"].dt.hour
-df["year_day_pct"] = df["horodatage_référence"].dt.dayofyear / 365
+df[HOUR_COLUMN] = df["horodatage_référence"].dt.hour
+df[YEAR_DAY_PCT_COLUMN] = df["horodatage_référence"].dt.dayofyear / 365
 
 target = TARGET_COLUMN
 
-df["target_30min"] = df[target].shift(-TARGET_DISTANCE)
+df[TARGET_COLUMN_NAME] = df[target].shift(-TARGET_DISTANCE)
 
-df["wind_10min_ago"] = df[target].shift(1)
-df["wind_20min_ago"] = df[target].shift(2)
-df["wind_30min_ago"] = df[target].shift(3)
-df["wind_40min_ago"] = df[target].shift(4)
-df["wind_50min_ago"] = df[target].shift(5)
-df["wind_60min_ago"] = df[target].shift(6)
+for shift in SHIFT_VALUES:
+    minutes = shift * 10
+    df[LAG_PREFIX.format(minutes)] = df[target].shift(shift)
 
-df["wind_trend_10min"] = df[target] - df["wind_10min_ago"]
-df["wind_trend_20min"] = df[target] - df["wind_20min_ago"]
-df["wind_trend_30min"] = df[target] - df["wind_30min_ago"]
-df["wind_trend_40min"] = df[target] - df["wind_40min_ago"]
-df["wind_trend_50min"] = df[target] - df["wind_50min_ago"]
-df["wind_trend_60min"] = df[target] - df["wind_60min_ago"]
+for shift in SHIFT_VALUES:
+    minutes = shift * 10
+    df[TREND_PREFIX.format(minutes)] = df[target] - df[LAG_PREFIX.format(minutes)]
 
-df["pressure_6h_ago"] = df["pression_barométrique_qfe"].shift(PRESSURE_SHIFT)
-df["pressure_trend_6h"] = df["pression_barométrique_qfe"] - df["pressure_6h_ago"]
+df[PRESSURE_6H_AGO_COLUMN] = df[PRESSURE_COLUMN].shift(PRESSURE_SHIFT)
+df[PRESSURE_TREND_6H_COLUMN] = df[PRESSURE_COLUMN] - df[PRESSURE_6H_AGO_COLUMN]
 
 # Drop rows with NaN in features used
-features_to_check = [
-    "wind_10min_ago",
-    "wind_20min_ago",
-    "wind_30min_ago",
-    "wind_40min_ago",
-    "wind_50min_ago",
-    "wind_60min_ago",
-    "wind_trend_10min",
-    "wind_trend_20min",
-    "wind_trend_30min",
-    "wind_trend_40min",
-    "wind_trend_50min",
-    "wind_trend_60min",
-    "direction_du_vent_moyenne_10min",
-    "hour",
-    "year_day_pct",
-    "pressure_trend_6h",
-    "humidité",
-    "température_air",
-    "rafale_3s_maximum_kmh",
-]
+lag_cols = [LAG_PREFIX.format(s * 10) for s in SHIFT_VALUES]
+trend_cols = [TREND_PREFIX.format(s * 10) for s in SHIFT_VALUES]
+
+features_to_check = (
+    lag_cols
+    + trend_cols
+    + [
+        WIND_DIRECTION_COLUMN,
+        HOUR_COLUMN,
+        YEAR_DAY_PCT_COLUMN,
+        PRESSURE_TREND_6H_COLUMN,
+        HUMIDITY_COLUMN,
+        AIR_TEMP_COLUMN,
+        GUST_COLUMN,
+    ]
+)
 df = df.dropna(subset=features_to_check)
 
 
 # Feature selection
-features = [
-    "wind_10min_ago",
-    "wind_20min_ago",
-    "wind_30min_ago",
-    "wind_40min_ago",
-    "wind_50min_ago",
-    "wind_60min_ago",
-    "wind_trend_10min",
-    "wind_trend_20min",
-    "wind_trend_30min",
-    "wind_trend_40min",
-    "wind_trend_50min",
-    "wind_trend_60min",
-    "direction_du_vent_moyenne_10min",
-    "hour",
-    "year_day_pct",
-    "pressure_trend_6h",
-    "humidité",
-    "température_air",
-    "rafale_3s_maximum_kmh",
-]
+features = (
+    lag_cols
+    + trend_cols
+    + [
+        WIND_DIRECTION_COLUMN,
+        HOUR_COLUMN,
+        YEAR_DAY_PCT_COLUMN,
+        PRESSURE_TREND_6H_COLUMN,
+        HUMIDITY_COLUMN,
+        AIR_TEMP_COLUMN,
+        GUST_COLUMN,
+    ]
+)
 
 # Ensure columns exist before split
 features = [f for f in features if f in df.columns]
@@ -130,9 +167,14 @@ train_df = df.iloc[:split_idx]
 test_df = df.iloc[split_idx:]
 
 
-X_train, y_train = train_df[features], train_df["target_30min"]
-test_df_shifted = test_df[features].shift(10).dropna()
-y_test = test_df["target_30min"].shift(10).iloc[: len(test_df_shifted)].dropna()
+X_train, y_train = train_df[features], train_df[TARGET_COLUMN_NAME]
+test_df_shifted = test_df[features].shift(TEST_SHIFT_STEPS).dropna()
+y_test = (
+    test_df[TARGET_COLUMN_NAME]
+    .shift(TEST_SHIFT_STEPS)
+    .iloc[: len(test_df_shifted)]
+    .dropna()
+)
 X_test = test_df_shifted.loc[y_test.index]
 
 # Prepare data in DMatrix format (GPU optimized)
@@ -140,108 +182,53 @@ dtrain = xgb.DMatrix(X_train, label=y_train, enable_categorical=True)
 dtest = xgb.DMatrix(X_test, label=y_test, enable_categorical=True)
 
 
-### PEAK WEIGHTED LOSS
-# Custom loss: peak-weighted asymmetric MSE
-# Penalizes errors on high wind speeds more heavily
+### DYNAMIC WEIGHTED LOSS
+# Custom loss: dynamically built from LOSS_CONFIGS
 
 
-def peak_weighted_loss(preds, dtrain):
+def _compute_weights(y_true):
+    deltas = []
+    for cfg in LOSS_CONFIGS:
+        if not cfg["enabled"]:
+            continue
+        if cfg["direction"] == "above":
+            delta = (
+                cfg["weight_factor"]
+                * np.maximum(0, y_true - cfg["threshold"])
+                / cfg["threshold"]
+            )
+        else:
+            delta = (
+                cfg["weight_factor"]
+                * np.maximum(0, cfg["threshold"] - y_true)
+                / cfg["threshold"]
+            )
+        deltas.append(delta)
+
+    if LOSS_COMBINATION == "additive":
+        return 1.0 + sum(deltas)
+    else:
+        weights = np.ones_like(y_true)
+        for d in deltas:
+            weights *= 1.0 + d
+        return weights
+
+
+def dynamic_weighted_loss(preds, dtrain):
     y_true = dtrain.get_label()
     errors = preds - y_true
-    # Weight increases with actual wind speed above threshold
-    weights = (
-        1.0
-        + PEAK_WEIGHT_FACTOR * np.maximum(0, y_true - PEAK_THRESHOLD) / PEAK_THRESHOLD
-    )
-    # Gradient
-    grad = 2.0 * errors * weights
-    # Hessian
-    hess = 2.0 * weights
-    return grad, hess
-
-
-def peak_weighted_eval(preds, dtrain):
-    y_true = dtrain.get_label()
-    errors = preds - y_true
-    weights = (
-        1.0
-        + PEAK_WEIGHT_FACTOR * np.maximum(0, y_true - PEAK_THRESHOLD) / PEAK_THRESHOLD
-    )
-    loss = np.mean(weights * errors**2)
-    return "peak_rmse", np.sqrt(loss)
-
-
-### LOW WIND WEIGHTED LOSS
-# Custom loss: low-wind-weighted asymmetric MSE
-# Penalizes errors on low wind speeds more heavily
-
-
-def low_wind_weighted_loss(preds, dtrain):
-    y_true = dtrain.get_label()
-    errors = preds - y_true
-    # Weight increases as wind speed drops below threshold
-    weights = (
-        1.0
-        + LOW_WIND_WEIGHT_FACTOR
-        * np.maximum(0, LOW_WIND_THRESHOLD - y_true)
-        / LOW_WIND_THRESHOLD
-    )
-    # Gradient
-    grad = 2.0 * errors * weights
-    # Hessian
-    hess = 2.0 * weights
-    return grad, hess
-
-
-def low_wind_weighted_eval(preds, dtrain):
-    y_true = dtrain.get_label()
-    errors = preds - y_true
-    weights = (
-        1.0
-        + LOW_WIND_WEIGHT_FACTOR
-        * np.maximum(0, LOW_WIND_THRESHOLD - y_true)
-        / LOW_WIND_THRESHOLD
-    )
-    loss = np.mean(weights * errors**2)
-    return "low_wind_rmse", np.sqrt(loss)
-
-
-### COMBINED LOSS
-def combined_weighted_loss(preds, dtrain):
-    y_true = dtrain.get_label()
-    errors = preds - y_true
-    peak_weights = (
-        1.0
-        + PEAK_WEIGHT_FACTOR * np.maximum(0, y_true - PEAK_THRESHOLD) / PEAK_THRESHOLD
-    )
-    low_wind_weights = (
-        1.0
-        + LOW_WIND_WEIGHT_FACTOR
-        * np.maximum(0, LOW_WIND_THRESHOLD - y_true)
-        / LOW_WIND_THRESHOLD
-    )
-    weights = peak_weights * low_wind_weights
+    weights = _compute_weights(y_true)
     grad = 2.0 * errors * weights
     hess = 2.0 * weights
     return grad, hess
 
 
-def combined_weighted_eval(preds, dtrain):
+def dynamic_weighted_eval(preds, dtrain):
     y_true = dtrain.get_label()
     errors = preds - y_true
-    peak_weights = (
-        1.0
-        + PEAK_WEIGHT_FACTOR * np.maximum(0, y_true - PEAK_THRESHOLD) / PEAK_THRESHOLD
-    )
-    low_wind_weights = (
-        1.0
-        + LOW_WIND_WEIGHT_FACTOR
-        * np.maximum(0, LOW_WIND_THRESHOLD - y_true)
-        / LOW_WIND_THRESHOLD
-    )
-    weights = peak_weights * low_wind_weights
+    weights = _compute_weights(y_true)
     loss = np.mean(weights * errors**2)
-    return "combined_rmse", np.sqrt(loss)
+    return LOSS_EVAL_METRIC_NAME, np.sqrt(loss)
 
 
 # Model configuration for GPU
@@ -250,7 +237,7 @@ params = {
     "eta": MODEL_ETA,
     "objective": "reg:squarederror",
     "tree_method": "hist",
-    "device": "cuda",
+    "device": "cuda" if USE_GPU else "cpu",
     "random_state": RANDOM_STATE,
 }
 
@@ -261,13 +248,10 @@ start_time = time.time()
 
 
 def select_loss():
-    if USE_PEAK_WEIGHTED_LOSS and USE_LOW_WIND_WEIGHTED_LOSS:
-        return combined_weighted_loss
-    elif USE_PEAK_WEIGHTED_LOSS:
-        return peak_weighted_loss
-    elif USE_LOW_WIND_WEIGHTED_LOSS:
-        return low_wind_weighted_loss
-    return None
+    enabled = [cfg for cfg in LOSS_CONFIGS if cfg["enabled"]]
+    if len(enabled) == 0:
+        return None
+    return dynamic_weighted_loss
 
 
 model = xgb.train(
@@ -290,8 +274,8 @@ y_pred = model.predict(dtest)
 y_pred_train = model.predict(dtrain)
 
 
-y_test = y_test[:-3]
-y_pred = y_pred[3:]
+y_test = y_test[:-TEST_PRED_SLICE]
+y_pred = y_pred[TEST_PRED_SLICE:]
 
 
 # Evaluation
@@ -302,8 +286,7 @@ r2 = r2_score(y_test, y_pred)
 r2_train = r2_score(y_train, y_pred_train)
 max_er = max_error(y_test, y_pred)
 abs_errors = np.abs(y_test - y_pred)
-pct_above_2kmh = np.mean(abs_errors > 2) * 100
-pct_above_5kmh = np.mean(abs_errors > 5) * 100
+error_pcts = {t: np.mean(abs_errors > t) * 100 for t in ERROR_THRESHOLDS}
 
 
 print(f"--- RESULTS ---")
@@ -313,8 +296,8 @@ print(f"Mean Absolute Error (MAE): {mae:.2f} km/h")
 print(f"Median Absolute Error (MedianAE): {medianae:.2f} km/h")
 print(f"RMSE: {rmse:.2f} km/h")
 print(f"Max Error: {max_er:.2f} km/h")
-print(f"Errors > 2 km/h: {pct_above_2kmh:.1f}%")
-print(f"Errors > 5 km/h: {pct_above_5kmh:.1f}%")
+for t in ERROR_THRESHOLDS:
+    print(f"Errors > {t} km/h: {error_pcts[t]:.1f}%")
 
 
 # Calculate R2 per iteration
@@ -327,7 +310,7 @@ test_r2_history = 1 - (test_mse / var_y)
 
 # Visualizations
 if "1" in show_graphs:
-    plt.figure(figsize=(18, 15))
+    plt.figure(figsize=PLOT_FIGSIZE_MAIN)
 
     # Plot 1: Train & Test Loss (RMSE)
     plt.subplot(2, 2, 1)
@@ -361,8 +344,8 @@ if "1" in show_graphs:
         linestyle="--",
     )
 
-    # Zoom on the converged region - use last 50% of iterations
-    last_half_idx = epochs // 2
+    # Zoom on the converged region - use last PLOT_R2_FOCUS_LAST_PCT of iterations
+    last_half_idx = int(epochs * (1 - PLOT_R2_FOCUS_LAST_PCT))
     train_vals = train_r2_history[last_half_idx:]
     test_vals = test_r2_history[last_half_idx:]
 
@@ -370,10 +353,10 @@ if "1" in show_graphs:
     r2_min = np.min(all_vals)
     r2_max = np.max(all_vals)
 
-    # Add 20% padding below and 5% above
-    y_min = r2_min - (r2_max - r2_min) * 20
-    y_max = r2_max + (r2_max - r2_min) * 5
-    plt.ylim(y_min, min(1.001, y_max))
+    # Add padding below and above
+    y_min = r2_min - (r2_max - r2_min) * PLOT_R2_Y_PADDING_LOW
+    y_max = r2_max + (r2_max - r2_min) * PLOT_R2_Y_PADDING_HIGH
+    plt.ylim(y_min, min(PLOT_R2_MAX_Y_CAP, y_max))
 
     plt.title("Convergence Focus (R2 Score)")
     plt.xlabel("Number of Trees")
@@ -384,7 +367,7 @@ if "1" in show_graphs:
     # Plot 3: Error Distribution
     plt.subplot(2, 2, 3)
     residuals = y_test - y_pred
-    sns.histplot(residuals, bins=100, kde=True, color="purple")
+    sns.histplot(residuals, bins=PLOT_ERROR_HIST_BINS, kde=True, color="purple")
     plt.axvline(x=0, color="black", linestyle="--")
     plt.title("Error Distribution (Residuals)")
 
@@ -402,16 +385,27 @@ if "1" in show_graphs:
 
 if "2" in show_graphs:
     # Final Plot: Temporal Zoom
-    plt.figure(figsize=(18, 6))
-    plt.plot(y_test.values[:300], label="Actual", color="black", alpha=0.7)
-    plt.plot(y_pred[:300], label="Predicted", color="orange", linestyle="--")
+    plt.figure(figsize=PLOT_FIGSIZE_TEMPORAL)
+    plt.plot(
+        y_test.values[:PLOT_TEMPORAL_ZOOM_ROWS],
+        label="Actual",
+        color="black",
+        alpha=0.7,
+    )
+    plt.plot(
+        y_pred[:PLOT_TEMPORAL_ZOOM_ROWS],
+        label="Predicted",
+        color="orange",
+        linestyle="--",
+    )
     plt.title("Zoom 50h: Actual vs Predicted")
     plt.legend()
     plt.show()
 
 
 print("--- Naivity Score ---")
-y_pred_naiv = test_df.loc[y_test.index, "wind_10min_ago"].values
+first_lag_col = LAG_PREFIX.format(SHIFT_VALUES[0] * 10)
+y_pred_naiv = test_df.loc[y_test.index, first_lag_col].values
 
 print(f"Naive Model R2 Score: {r2_score(y_test, y_pred_naiv):.4f}")
 print(
