@@ -168,14 +168,13 @@ test_df = df.iloc[split_idx:]
 
 
 X_train, y_train = train_df[features], train_df[TARGET_COLUMN_NAME]
-test_df_shifted = test_df[features].shift(TEST_SHIFT_STEPS).dropna()
-y_test = (
-    test_df[TARGET_COLUMN_NAME]
-    .shift(TEST_SHIFT_STEPS)
-    .iloc[: len(test_df_shifted)]
-    .dropna()
-)
-X_test = test_df_shifted.loc[y_test.index]
+X_test, y_test = test_df[features], test_df[TARGET_COLUMN_NAME]
+
+train_mask = y_train.notna()
+X_train, y_train = X_train[train_mask], y_train[train_mask]
+
+test_mask = y_test.notna()
+X_test, y_test = X_test[test_mask], y_test[test_mask]
 
 # Prepare data in DMatrix format (GPU optimized)
 dtrain = xgb.DMatrix(X_train, label=y_train, enable_categorical=True)
