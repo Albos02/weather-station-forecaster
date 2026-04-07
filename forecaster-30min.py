@@ -29,6 +29,11 @@ MODEL_MAX_DEPTH = 5
 MODEL_ETA = 0.1
 RANDOM_STATE = 42
 
+### PEAK WEIGHTED LOSS
+USE_PEAK_WEIGHTED_LOSS = True
+PEAK_THRESHOLD = 18.0
+PEAK_WEIGHT_FACTOR = 1.0
+
 # 1. Load and sort data
 df = pd.read_parquet("data/processed_windspeed.parquet", engine="pyarrow")
 df["horodatage_référence"] = pd.to_datetime(df["horodatage_référence"], dayfirst=True)
@@ -130,6 +135,37 @@ dtrain = xgb.DMatrix(X_train, label=y_train, enable_categorical=True)
 dtest = xgb.DMatrix(X_test, label=y_test, enable_categorical=True)
 
 
+
+### PEAK WEIGHTED LOSS
+# Custom loss: peak-weighted asymmetric MSE
+# Penalizes errors on high wind speeds more heavily
+
+def peak_weighted_loss(preds, dtrain):
+    y_true = dtrain.get_label()
+    errors = preds - y_true
+    # Weight increases with actual wind speed above threshold
+    weights = (
+        1.0
+        + PEAK_WEIGHT_FACTOR * np.maximum(0, y_true - PEAK_THRESHOLD) / PEAK_THRESHOLD
+    )
+    # Gradient
+    grad = 2.0 * errors * weights
+    # Hessian
+    hess = 2.0 * weights
+    return grad, hess
+
+
+def peak_weighted_eval(preds, dtrain):
+    y_true = dtrain.get_label()
+    errors = preds - y_true
+    weights = (
+        1.0
+        + PEAK_WEIGHT_FACTOR * np.maximum(0, y_true - PEAK_THRESHOLD) / PEAK_THRESHOLD
+    )
+    loss = np.mean(weights * errors**2)
+    return "peak_rmse", np.sqrt(loss)
+
+
 # Model configuration for GPU
 params = {
     "max_depth": MODEL_MAX_DEPTH,
@@ -149,6 +185,7 @@ model = xgb.train(
     params,
     dtrain,
     num_boost_round=NUM_BOOST_ROUNDS,
+    obj=peak_weighted_loss if USE_PEAK_WEIGHTED_LOSS else None,
     evals=[(dtrain, "train"), (dtest, "test")],
     evals_result=evals_result,
     verbose_eval=False,
