@@ -5,6 +5,7 @@ import seaborn as sns
 
 from sklearn.metrics import (
     mean_absolute_error,
+    median_absolute_error,
     r2_score,
     mean_squared_error,
 )
@@ -165,6 +166,7 @@ y_pred = y_pred[3:]
 
 # Evaluation
 mae = mean_absolute_error(y_test, y_pred)
+medianae = median_absolute_error(y_test, y_pred)
 rmse = np.sqrt(mean_squared_error(y_test, y_pred))
 r2 = r2_score(y_test, y_pred)
 r2_train = r2_score(y_train, y_pred_train)
@@ -174,6 +176,7 @@ print(f"--- RESULTS ---")
 print(f"R2 Score (TEST): {r2:.4f}")
 print(f"R2 Score (TRAIN): {r2_train:.4f} (check for overfitting)")
 print(f"Mean Absolute Error (MAE): {mae:.2f} km/h")
+print(f"Median Absolute Error (MedianAE): {medianae:.2f} km/h")
 print(f"RMSE: {rmse:.2f} km/h")
 
 
