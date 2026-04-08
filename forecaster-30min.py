@@ -71,8 +71,7 @@ YEAR_DAY_PCT_COLUMN = "year_day_pct"
 
 # --- Train/Test Split ---
 TRAIN_SPLIT_RATIO = 0.8
-TEST_SHIFT_STEPS = 10  # How many steps to shift test data
-TEST_PRED_SLICE = 3  # How many rows to slice off for alignment
+TEST_PRED_SLICE = TARGET_DISTANCE  # How many rows to slice off for alignment
 
 # --- Model Hyperparameters ---
 NUM_BOOST_ROUNDS = 60
@@ -355,7 +354,7 @@ print(f"Median Absolute Error (MedianAE): {medianae:.2f} km/h")
 print(f"RMSE: {rmse:.2f} km/h")
 print(f"Max Error: {max_er:.2f} km/h")
 for t in ERROR_THRESHOLDS:
-    print(f"Errors > {t} km/h: {error_pcts[t]:.1f}%")
+    print(f"Errors > {t} km/h: {error_pcts[t]:.2f}%")
 
 
 # Calculate R2 per iteration
