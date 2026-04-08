@@ -33,6 +33,7 @@ GUST_COLUMN = "rafale_3s_maximum_kmh"
 # --- Target ---
 TARGET_DISTANCE = 3  # * 10 = prediction horizon in minutes (3 = 30min ahead)
 TARGET_COLUMN_NAME = "target_30min"
+USE_DELTA_TARGET = True  # Predict change in wind speed instead of absolute value
 
 # --- Lag Features ---
 SHIFT_VALUES = [1, 2, 3, 4, 5, 6]  # Number of 10-min steps back for lag features
@@ -71,14 +72,14 @@ ERROR_THRESHOLDS = [1, 2, 5, 10]  # km/h thresholds for error percentage reporti
 LOSS_CONFIGS = [
     {
         "name": "peak",
-        "enabled": True,
+        "enabled": False,
         "threshold": 18.0,
         "weight_factor": 1.0,
         "direction": "above",  # weight increases above threshold
     },
     {
         "name": "low_wind",
-        "enabled": True,
+        "enabled": False,
         "threshold": 5.0,
         "weight_factor": 1.5,
         "direction": "below",  # weight increases below threshold
@@ -124,6 +125,12 @@ df[YEAR_DAY_PCT_COLUMN] = df["horodatage_référence"].dt.dayofyear / 365
 target = TARGET_COLUMN
 
 df[TARGET_COLUMN_NAME] = df[target].shift(-TARGET_DISTANCE)
+
+if USE_DELTA_TARGET:
+    df["target_30min_delta"] = df[TARGET_COLUMN_NAME] - df[target]
+    target_col = "target_30min_delta"
+else:
+    target_col = TARGET_COLUMN_NAME
 
 for shift in SHIFT_VALUES:
     minutes = shift * 10
@@ -188,8 +195,8 @@ train_df = df.iloc[:split_idx]
 test_df = df.iloc[split_idx:]
 
 
-X_train, y_train = train_df[features], train_df[TARGET_COLUMN_NAME]
-X_test, y_test = test_df[features], test_df[TARGET_COLUMN_NAME]
+X_train, y_train = train_df[features], train_df[target_col]
+X_test, y_test = test_df[features], test_df[target_col]
 
 train_mask = y_train.notna()
 X_train, y_train = X_train[train_mask], y_train[train_mask]
@@ -293,6 +300,13 @@ print(f"Completed in {duration:.2f} seconds ({duration / 60:.2f} minutes)")
 y_pred = model.predict(dtest)
 y_pred_train = model.predict(dtrain)
 
+# Convert delta predictions back to absolute values for evaluation
+if USE_DELTA_TARGET:
+    current_wind_test = test_df[target].loc[y_test.index].values
+    current_wind_train = train_df[target].iloc[: len(y_pred_train)].values
+    y_test = y_test + current_wind_test
+    y_pred = y_pred + current_wind_test
+    y_pred_train = y_pred_train + current_wind_train
 
 y_test = y_test[:-TEST_PRED_SLICE]
 y_pred = y_pred[TEST_PRED_SLICE:]
