@@ -19,6 +19,21 @@ import xgboost as xgb
 # CONFIGURATION CONSTANTS - Tweak these to adjust behavior
 # ============================================================
 
+### Current Best Results :
+# Delta Target = False
+# Log Target = False
+# 
+# Loss Config : peak = True
+# Loss Config : low wind = True
+# 
+# 
+# 
+# 
+# Model max_depth=4
+# num_boost_round=60
+#  
+
+
 # --- Data ---
 DATA_FILE = "data/processed_windspeed.parquet"
 TARGET_COLUMN = "vitesse_vent_moyenne_10min_kmh"
@@ -33,7 +48,8 @@ GUST_COLUMN = "rafale_3s_maximum_kmh"
 # --- Target ---
 TARGET_DISTANCE = 3  # * 10 = prediction horizon in minutes (3 = 30min ahead)
 TARGET_COLUMN_NAME = "target_30min"
-USE_DELTA_TARGET = True  # Predict change in wind speed instead of absolute value
+USE_DELTA_TARGET = False  # Predict change in wind speed instead of absolute value
+USE_LOG_TARGET = True  # Log-transform target for relative changes
 
 # --- Lag Features ---
 SHIFT_VALUES = [1, 2, 3, 4, 5, 6]  # Number of 10-min steps back for lag features
@@ -129,6 +145,9 @@ df[TARGET_COLUMN_NAME] = df[target].shift(-TARGET_DISTANCE)
 if USE_DELTA_TARGET:
     df["target_30min_delta"] = df[TARGET_COLUMN_NAME] - df[target]
     target_col = "target_30min_delta"
+elif USE_LOG_TARGET:
+    df["target_30min_log"] = np.log1p(df[TARGET_COLUMN_NAME])
+    target_col = "target_30min_log"
 else:
     target_col = TARGET_COLUMN_NAME
 
@@ -307,6 +326,11 @@ if USE_DELTA_TARGET:
     y_test = y_test + current_wind_test
     y_pred = y_pred + current_wind_test
     y_pred_train = y_pred_train + current_wind_train
+
+elif USE_LOG_TARGET:
+    y_test = np.expm1(y_test)
+    y_pred = np.expm1(y_pred)
+    y_pred_train = np.expm1(y_pred_train)
 
 y_test = y_test[:-TEST_PRED_SLICE]
 y_pred = y_pred[TEST_PRED_SLICE:]
