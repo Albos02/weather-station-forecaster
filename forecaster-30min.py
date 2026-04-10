@@ -25,11 +25,11 @@ import xgboost as xgb
 #
 # Loss Config : Pinball Loss (quantile=0.5)
 #
-# Model max_depth=8
-# num_boost_round=60
+# Model max_depth=5
+# num_boost_round=7
 #
-# Test R2: 0.9929
-# MAE: 0.43 km/h
+# Test R2: 0.9958
+# MAE: 0.44 km/h
 #
 
 
@@ -73,8 +73,8 @@ TRAIN_SPLIT_RATIO = 0.8
 TEST_PRED_SLICE = TARGET_DISTANCE  # How many rows to slice off for alignment
 
 # --- Model Hyperparameters ---
-NUM_BOOST_ROUNDS = 60
-MODEL_MAX_DEPTH = 8
+NUM_BOOST_ROUNDS = 7
+MODEL_MAX_DEPTH = 5
 MODEL_ETA = 0.1
 RANDOM_STATE = 42
 USE_GPU = True
