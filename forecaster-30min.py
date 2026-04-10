@@ -126,9 +126,9 @@ df = pd.read_parquet(DATA_FILE, engine="pyarrow")
 df["horodatage_référence"] = pd.to_datetime(df["horodatage_référence"], dayfirst=True)
 df = df.sort_values("horodatage_référence").reset_index(drop=True)
 
-# 2. Handle NaN values - linear interpolation
+# 2. Handle NaN values - causal forward fill only (no backward fill to prevent leakage)
 cols_num = df.select_dtypes(include=[np.number]).columns
-df[cols_num] = df[cols_num].interpolate(method="linear").bfill()
+df[cols_num] = df[cols_num].ffill()
 
 # 3. Feature Engineering - Hour, Month and Time Lags
 df[HOUR_COLUMN] = df["horodatage_référence"].dt.hour
@@ -213,7 +213,7 @@ features = [f for f in features if f in df.columns]
 
 # Chronological split (past for training)
 split_idx = int(len(df) * TRAIN_SPLIT_RATIO)
-train_df = df.iloc[:split_idx]
+train_df = df.iloc[: split_idx - TARGET_DISTANCE]
 test_df = df.iloc[split_idx:]
 
 
@@ -389,12 +389,17 @@ print(f"Completed in {duration:.2f} seconds ({duration / 60:.2f} minutes)")
 y_pred = model.predict(dtest)
 y_pred_train = model.predict(dtrain)
 
+# Capture variance of deltas for R2 history calculation before converting to absolutes
+var_y_test_delta = np.var(y_test)
+var_y_train_delta = np.var(y_train)
+
 # Convert delta predictions back to absolute values for evaluation
 if USE_DELTA_TARGET:
     current_wind_test = test_df[target].loc[y_test.index].values
     current_wind_train = train_df[target].iloc[: len(y_pred_train)].values
     y_test = y_test + current_wind_test
     y_pred = y_pred + current_wind_test
+    y_train = y_train + current_wind_train
     y_pred_train = y_pred_train + current_wind_train
 
 elif USE_LOG_TARGET:
@@ -433,9 +438,8 @@ train_metric_key = "mphe" if USE_HUBER_LOSS else "rmse"
 test_metric_key = "mphe" if USE_HUBER_LOSS else "rmse"
 train_mse = np.array(evals_result["train"][train_metric_key]) ** 2
 test_mse = np.array(evals_result["test"][test_metric_key]) ** 2
-var_y = np.var(y_test)
-train_r2_history = 1 - (train_mse / np.var(y_train))
-test_r2_history = 1 - (test_mse / var_y)
+train_r2_history = 1 - (train_mse / var_y_train_delta)
+test_r2_history = 1 - (test_mse / var_y_test_delta)
 
 
 # Visualizations
