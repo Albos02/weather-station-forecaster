@@ -20,18 +20,17 @@ import xgboost as xgb
 # ============================================================
 
 ### Current Best Results :
-# Delta Target = False
+# Delta Target = True
 # Log Target = False
-# 
-# Loss Config : peak = True
-# Loss Config : low wind = True
-# 
-# 
-# 
-# 
-# Model max_depth=4
+#
+# Loss Config : Pinball Loss (quantile=0.5)
+#
+# Model max_depth=8
 # num_boost_round=60
-#  
+#
+# Test R2: 0.9929
+# MAE: 0.43 km/h
+#
 
 
 # --- Data ---
@@ -48,8 +47,8 @@ GUST_COLUMN = "rafale_3s_maximum_kmh"
 # --- Target ---
 TARGET_DISTANCE = 3  # * 10 = prediction horizon in minutes (3 = 30min ahead)
 TARGET_COLUMN_NAME = "target_30min"
-USE_DELTA_TARGET = False  # Predict change in wind speed instead of absolute value
-USE_LOG_TARGET = True  # Log-transform target for relative changes
+USE_DELTA_TARGET = True  # Predict change in wind speed instead of absolute value
+USE_LOG_TARGET = False  # Log-transform target for relative changes
 
 # --- Lag Features ---
 SHIFT_VALUES = [1, 2, 3, 4, 5, 6]  # Number of 10-min steps back for lag features
@@ -75,7 +74,7 @@ TEST_PRED_SLICE = TARGET_DISTANCE  # How many rows to slice off for alignment
 
 # --- Model Hyperparameters ---
 NUM_BOOST_ROUNDS = 60
-MODEL_MAX_DEPTH = 4
+MODEL_MAX_DEPTH = 8
 MODEL_ETA = 0.1
 RANDOM_STATE = 42
 USE_GPU = True
@@ -84,23 +83,28 @@ USE_GPU = True
 ERROR_THRESHOLDS = [1, 2, 5, 10]  # km/h thresholds for error percentage reporting
 
 # --- Loss Configuration ---
+USE_HUBER_LOSS = False  # Use Huber loss (robust to outliers)
+HUBER_DELTA = 1.0  # Threshold for Huber loss (transition from quadratic to linear)
+USE_PINBALL_LOSS = True  # Use pinball loss (quantile loss)
+PINBALL_QUANTILE = 0.5  # Quantile for pinball loss (0.5 = median)
+
 LOSS_CONFIGS = [
     {
         "name": "peak",
         "enabled": False,
         "threshold": 18.0,
         "weight_factor": 1.0,
-        "direction": "above",  # weight increases above threshold
+        "direction": "above",
     },
     {
         "name": "low_wind",
         "enabled": False,
         "threshold": 5.0,
         "weight_factor": 1.5,
-        "direction": "below",  # weight increases below threshold
+        "direction": "below",
     },
 ]
-LOSS_COMBINATION = "additive"  # "additive" or "multiplicative"
+LOSS_COMBINATION = "additive"
 LOSS_EVAL_METRIC_NAME = "combined_rmse"
 
 # --- Visualization ---
@@ -259,6 +263,50 @@ def _compute_weights(y_true):
         return weights
 
 
+def huber_obj(preds, dtrain):
+    y_true = dtrain.get_label()
+    errors = preds - y_true
+    abs_errors = np.abs(errors)
+    grad = np.where(
+        abs_errors <= HUBER_DELTA,
+        -errors,
+        -HUBER_DELTA * np.sign(errors),
+    )
+    hess = np.where(abs_errors <= HUBER_DELTA, 1.0, 1e-6)
+    return grad, hess
+
+
+def huber_eval(preds, dtrain):
+    y_true = dtrain.get_label()
+    errors = preds - y_true
+    abs_errors = np.abs(errors)
+    loss = np.mean(
+        np.where(
+            abs_errors <= HUBER_DELTA,
+            errors**2,
+            HUBER_DELTA * (2.0 * abs_errors - HUBER_DELTA),
+        )
+    )
+    return "huber_rmse", np.sqrt(loss)
+
+
+def pinball_obj(preds, dtrain):
+    y_true = dtrain.get_label()
+    errors = preds - y_true
+    grad = np.where(errors > 0, PINBALL_QUANTILE, PINBALL_QUANTILE - 1)
+    hess = np.ones_like(errors)
+    return grad, hess
+
+
+def pinball_eval(preds, dtrain):
+    y_true = dtrain.get_label()
+    errors = y_true - preds
+    pinball = np.mean(
+        np.where(errors > 0, PINBALL_QUANTILE * errors, (PINBALL_QUANTILE - 1) * errors)
+    )
+    return "pinball_loss", pinball
+
+
 def dynamic_weighted_loss(preds, dtrain):
     y_true = dtrain.get_label()
     errors = preds - y_true
@@ -277,14 +325,25 @@ def dynamic_weighted_eval(preds, dtrain):
 
 
 # Model configuration for GPU
-params = {
-    "max_depth": MODEL_MAX_DEPTH,
-    "eta": MODEL_ETA,
-    "objective": "reg:squarederror",
-    "tree_method": "hist",
-    "device": "cuda" if USE_GPU else "cpu",
-    "random_state": RANDOM_STATE,
-}
+if USE_HUBER_LOSS:
+    params = {
+        "max_depth": MODEL_MAX_DEPTH,
+        "eta": MODEL_ETA,
+        "objective": "reg:pseudohubererror",
+        "tree_method": "hist",
+        "device": "cuda" if USE_GPU else "cpu",
+        "random_state": RANDOM_STATE,
+        "huber_slope": HUBER_DELTA,
+    }
+else:
+    params = {
+        "max_depth": MODEL_MAX_DEPTH,
+        "eta": MODEL_ETA,
+        "objective": "reg:squarederror",
+        "tree_method": "hist",
+        "device": "cuda" if USE_GPU else "cpu",
+        "random_state": RANDOM_STATE,
+    }
 
 evals_result = {}
 
@@ -293,10 +352,22 @@ start_time = time.time()
 
 
 def select_loss():
+    if USE_HUBER_LOSS:
+        return None  # Use built-in Huber
+    if USE_PINBALL_LOSS:
+        return pinball_obj
     enabled = [cfg for cfg in LOSS_CONFIGS if cfg["enabled"]]
     if len(enabled) == 0:
         return None
     return dynamic_weighted_loss
+
+
+def select_eval():
+    if USE_HUBER_LOSS:
+        return huber_eval
+    if USE_PINBALL_LOSS:
+        return pinball_eval
+    return dynamic_weighted_eval
 
 
 model = xgb.train(
@@ -358,8 +429,10 @@ for t in ERROR_THRESHOLDS:
 
 
 # Calculate R2 per iteration
-train_mse = np.array(evals_result["train"]["rmse"]) ** 2
-test_mse = np.array(evals_result["test"]["rmse"]) ** 2
+train_metric_key = "mphe" if USE_HUBER_LOSS else "rmse"
+test_metric_key = "mphe" if USE_HUBER_LOSS else "rmse"
+train_mse = np.array(evals_result["train"][train_metric_key]) ** 2
+test_mse = np.array(evals_result["test"][test_metric_key]) ** 2
 var_y = np.var(y_test)
 train_r2_history = 1 - (train_mse / np.var(y_train))
 test_r2_history = 1 - (test_mse / var_y)
