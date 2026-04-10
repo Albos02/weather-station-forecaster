@@ -3,10 +3,18 @@ import pandas as pd
 import xgboost as xgb
 import sys
 import os
+import urllib.request
+import ssl
 
 # ============================================================
 # CONFIGURATION CONSTANTS - Must match the training configuration
 # ============================================================
+
+# --- Data ---
+DATA_FILE = "data/ogd-smn_bou_t_now.csv"  # Live data file
+REMOTE_DATA_URL = (
+    "https://data.geo.admin.ch/ch.meteoschweiz.ogd-smn/bou/ogd-smn_bou_t_now.csv"
+)
 
 # --- Data ---
 DATA_FILE = "data/ogd-smn_bou_t_now.csv"  # Live data file
@@ -54,7 +62,16 @@ USE_GPU = True
 def main():
     show_graphs = sys.argv[1] if len(sys.argv) > 1 else ""
 
-    # 1. Load and sort data from CSV
+    # 1. Download latest data from remote source
+    print(f"Downloading latest data from {REMOTE_DATA_URL}...")
+    try:
+        # Download the file
+        urllib.request.urlretrieve(REMOTE_DATA_URL, DATA_FILE)
+        print("Download completed successfully.")
+    except Exception as e:
+        print(f"Warning: Failed to download data ({e}). Using local file if available.")
+
+    # 2. Load and sort data from CSV
     print("Loading live CSV data...")
     df = pd.read_csv(DATA_FILE, sep=";")
 
