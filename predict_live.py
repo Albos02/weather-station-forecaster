@@ -95,194 +95,141 @@ def main():
     )
     df = df.sort_values("horodatage_référence").reset_index(drop=True)
 
-    print(f"Loaded {len(df)} rows of data")
-    print(f"Latest timestamp: {df['horodatage_référence'].iloc[-1]}")
-
-    # 2. Handle NaN values - causal forward fill only (no backward fill to prevent leakage)
-    cols_num = df.select_dtypes(include=[np.number]).columns
-    df[cols_num] = df[cols_num].ffill()
-
-    # 3. Feature Engineering - Hour, Month and Time Lags
-    df[HOUR_COLUMN] = df["horodatage_référence"].dt.hour
-    df[HOUR_SIN_COLUMN] = np.sin(2 * np.pi * df[HOUR_COLUMN] / 24)
-    df[HOUR_COS_COLUMN] = np.cos(2 * np.pi * df[HOUR_COLUMN] / 24)
-    df[WIND_DIR_SIN_COLUMN] = np.sin(2 * np.pi * df[WIND_DIRECTION_COLUMN] / 360)
-    df[WIND_DIR_COS_COLUMN] = np.cos(2 * np.pi * df[WIND_DIRECTION_COLUMN] / 360)
-    df["month"] = df["horodatage_référence"].dt.month
-    df[MONTH_SIN_COLUMN] = np.sin(2 * np.pi * df["month"] / 12)
-    df[MONTH_COS_COLUMN] = np.cos(2 * np.pi * df["month"] / 12)
-    df[YEAR_DAY_PCT_COLUMN] = df["horodatage_référence"].dt.dayofyear / 365
-
-    target = TARGET_COLUMN
-
-    df[TARGET_COLUMN_NAME] = df[target].shift(-TARGET_DISTANCE)
-
-    if USE_DELTA_TARGET:
-        df["target_30min_delta"] = df[TARGET_COLUMN_NAME] - df[target]
-        target_col = "target_30min_delta"
-    elif USE_LOG_TARGET:
-        df["target_30min_log"] = np.log1p(df[TARGET_COLUMN_NAME])
-        target_col = "target_30min_log"
-    else:
-        target_col = TARGET_COLUMN_NAME
-
-    for shift in SHIFT_VALUES:
-        minutes = shift * 10
-        df[LAG_PREFIX.format(minutes)] = df[target].shift(shift)
-
-    for shift in SHIFT_VALUES:
-        minutes = shift * 10
-        df[TREND_PREFIX.format(minutes)] = df[target] - df[LAG_PREFIX.format(minutes)]
-
-    df[PRESSURE_6H_AGO_COLUMN] = df[PRESSURE_COLUMN].shift(PRESSURE_SHIFT)
-    df[PRESSURE_TREND_6H_COLUMN] = df[PRESSURE_COLUMN] - df[PRESSURE_6H_AGO_COLUMN]
-
-    # Drop rows with NaN in features used
-    lag_cols = [LAG_PREFIX.format(s * 10) for s in SHIFT_VALUES]
-    trend_cols = [TREND_PREFIX.format(s * 10) for s in SHIFT_VALUES]
-
-    features_to_check = (
-        lag_cols
-        + trend_cols
-        + [
-            WIND_DIR_SIN_COLUMN,
-            WIND_DIR_COS_COLUMN,
-            HOUR_SIN_COLUMN,
-            HOUR_COS_COLUMN,
-            MONTH_SIN_COLUMN,
-            MONTH_COS_COLUMN,
-            YEAR_DAY_PCT_COLUMN,
-            PRESSURE_TREND_6H_COLUMN,
-            HUMIDITY_COLUMN,
-            AIR_TEMP_COLUMN,
-            GUST_COLUMN,
-        ]
-    )
-
-    # For live prediction, we only need the latest row that has all features
-    # We'll keep all rows for now but note that the last few rows may have NaN
-    df_clean = df.dropna(subset=features_to_check)
-
-    if len(df_clean) == 0:
-        print(
-            "Error: Not enough data to create features. Need at least {} rows.".format(
-                max(SHIFT_VALUES) + TARGET_DISTANCE + PRESSURE_SHIFT
-            )
-        )
-        return
-
-    print(f"After cleaning, {len(df_clean)} rows available for feature creation")
-
-    # Feature selection
-    features = (
-        lag_cols
-        + trend_cols
-        + [
-            WIND_DIR_SIN_COLUMN,
-            WIND_DIR_COS_COLUMN,
-            HOUR_SIN_COLUMN,
-            HOUR_COS_COLUMN,
-            MONTH_SIN_COLUMN,
-            MONTH_COS_COLUMN,
-            YEAR_DAY_PCT_COLUMN,
-            PRESSURE_TREND_6H_COLUMN,
-            HUMIDITY_COLUMN,
-            AIR_TEMP_COLUMN,
-            GUST_COLUMN,
-        ]
-    )
-
-    # Ensure columns exist before modeling
-    features = [f for f in features if f in df_clean.columns]
-
-    # For live prediction, we want to predict the next value
-    # So we use the last row that has all features
-    last_row_idx = len(df_clean) - 1
-    X_live = df_clean[features].iloc[[last_row_idx]]
-    current_wind = df_clean[target].iloc[last_row_idx]
-
-    print(
-        f"Making prediction based on data from: {df_clean['horodatage_référence'].iloc[last_row_idx]}"
-    )
-    print(f"Current wind speed: {current_wind:.2f} km/h")
-
-    # Prepare data in DMatrix format (GPU optimized)
-    dlive = xgb.DMatrix(X_live, enable_categorical=True)
+    # 3. Perform n iterative predictions
+    n = 20
+    predictions = []
 
     # Load pre-trained model
     model_path = "models/forecaster-30min.ubj"
     print(f"Loading pre-trained model from {model_path}")
-
     if not os.path.exists(model_path):
         print(f"Error: Model file {model_path} not found!")
         return
-
     model = xgb.Booster()
     model.load_model(model_path)
 
-    # Prediction
-    print("Making live prediction...")
-    y_pred = model.predict(dlive)
+    current_df = df.copy()
 
-    # Convert delta prediction back to absolute value if needed
-    if USE_DELTA_TARGET:
-        prediction = y_pred[0] + current_wind
-    elif USE_LOG_TARGET:
-        prediction = np.expm1(y_pred[0])
-    else:
-        prediction = y_pred[0]
+    for i in range(n):
+        print(f"\n--- Iteration {i + 1} ---")
 
-    print(f"\n=== LIVE PREDICTION ===")
-    print(f"Predicted wind speed in 30 minutes: {prediction:.2f} km/h")
-    print(f"Predicted change: {y_pred[0]:.2f} km/h")
+        # Feature Engineering for current data
+        # Handle NaN values
+        cols_num = current_df.select_dtypes(include=[np.number]).columns
+        current_df[cols_num] = current_df[cols_num].ffill()
 
-    # Optional: Show recent trend
-    if len(df_clean) >= 6:
-        recent_winds = df_clean[target].tail(6).values
-        print(f"\nRecent wind speeds (last 6 observations):")
-        for i, ws in enumerate(recent_winds):
-            print(f"  T-{5 - i * 10}min: {ws:.2f} km/h")
+        # Add time features
+        current_df[HOUR_COLUMN] = current_df["horodatage_référence"].dt.hour
+        current_df[HOUR_SIN_COLUMN] = np.sin(2 * np.pi * current_df[HOUR_COLUMN] / 24)
+        current_df[HOUR_COS_COLUMN] = np.cos(2 * np.pi * current_df[HOUR_COLUMN] / 24)
+        current_df[WIND_DIR_SIN_COLUMN] = np.sin(
+            2 * np.pi * current_df[WIND_DIRECTION_COLUMN] / 360
+        )
+        current_df[WIND_DIR_COS_COLUMN] = np.cos(
+            2 * np.pi * current_df[WIND_DIRECTION_COLUMN] / 360
+        )
+        current_df["month"] = current_df["horodatage_référence"].dt.month
+        current_df[MONTH_SIN_COLUMN] = np.sin(2 * np.pi * current_df["month"] / 12)
+        current_df[MONTH_COS_COLUMN] = np.cos(2 * np.pi * current_df["month"] / 12)
+        current_df[YEAR_DAY_PCT_COLUMN] = (
+            current_df["horodatage_référence"].dt.dayofyear / 365
+        )
 
-    # Optional: Show temporal plot
-    if "1" in show_graphs and len(df_clean) >= 10:
+        # Lags and Trends
+        target = TARGET_COLUMN
+        for shift in SHIFT_VALUES:
+            minutes = shift * 10
+            current_df[LAG_PREFIX.format(minutes)] = current_df[target].shift(shift)
+            current_df[TREND_PREFIX.format(minutes)] = (
+                current_df[target] - current_df[LAG_PREFIX.format(minutes)]
+            )
+
+        current_df[PRESSURE_6H_AGO_COLUMN] = current_df[PRESSURE_COLUMN].shift(
+            PRESSURE_SHIFT
+        )
+        current_df[PRESSURE_TREND_6H_COLUMN] = (
+            current_df[PRESSURE_COLUMN] - current_df[PRESSURE_6H_AGO_COLUMN]
+        )
+
+        # Feature selection
+        features = (
+            [LAG_PREFIX.format(s * 10) for s in SHIFT_VALUES]
+            + [TREND_PREFIX.format(s * 10) for s in SHIFT_VALUES]
+            + [
+                WIND_DIR_SIN_COLUMN,
+                WIND_DIR_COS_COLUMN,
+                HOUR_SIN_COLUMN,
+                HOUR_COS_COLUMN,
+                MONTH_SIN_COLUMN,
+                MONTH_COS_COLUMN,
+                YEAR_DAY_PCT_COLUMN,
+                PRESSURE_TREND_6H_COLUMN,
+                HUMIDITY_COLUMN,
+                AIR_TEMP_COLUMN,
+                GUST_COLUMN,
+            ]
+        )
+        features = [f for f in features if f in current_df.columns]
+
+        # Get latest row
+        X_live = current_df[features].iloc[[-1]]
+        dlive = xgb.DMatrix(X_live, enable_categorical=True)
+
+        y_pred = model.predict(dlive)
+        current_wind = current_df[target].iloc[-1]
+
+        if USE_DELTA_TARGET:
+            prediction = y_pred[0] + current_wind
+        elif USE_LOG_TARGET:
+            prediction = np.expm1(y_pred[0])
+        else:
+            prediction = y_pred[0]
+
+        pred_time = current_df["horodatage_référence"].iloc[-1] + pd.Timedelta(
+            minutes=0
+        )
+        predictions.append((pred_time, prediction))
+        print(f"Predicted wind at {pred_time}: {prediction:.2f} km/h")
+
+        # Remove last row for next iteration
+        current_df = current_df.iloc[:-1].reset_index(drop=True)
+
+    # Visualization
+    if "1" in show_graphs:
         try:
             import matplotlib.pyplot as plt
 
             plt.figure(figsize=(12, 6))
 
-            # Plot recent history
-            recent_history = df_clean.tail(20)
+            # Plot historical
             plt.plot(
-                recent_history["horodatage_référence"],
-                recent_history[target],
-                label="Historical",
-                color="blue",
+                df["horodatage_référence"].tail(30),
+                df[TARGET_COLUMN].tail(30),
+                label="Actual Data",
                 marker="o",
+                color="blue",
             )
 
-            # Plot prediction point
-            future_time = recent_history["horodatage_référence"].iloc[
-                -1
-            ] + pd.Timedelta(minutes=30)
+            # Plot predictions
+            pred_times = [p[0] for p in predictions]
+            pred_vals = [p[1] for p in predictions]
             plt.plot(
-                [future_time],
-                [prediction],
-                label="Prediction (30min ahead)",
-                color="red",
+                pred_times,
+                pred_vals,
+                label="Predictions",
                 marker="s",
-                markersize=10,
+                color="red",
+                linestyle="--",
             )
 
-            plt.title("Wind Speed Prediction - Live Update")
+            plt.title("Actual vs 3x Iterative Predictions")
             plt.xlabel("Time")
             plt.ylabel("Wind Speed (km/h)")
             plt.legend()
-            plt.grid(True, alpha=0.3)
-            plt.xticks(rotation=45)
-            plt.tight_layout()
+            plt.grid(True)
             plt.show()
-        except ImportError:
-            print("Matplotlib not available for plotting")
+        except Exception as e:
+            print(f"Plotting failed: {e}")
 
 
 if __name__ == "__main__":
